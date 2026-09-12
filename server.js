@@ -102,7 +102,7 @@ app.get('/auth/callback', async (req, res) => {
     if(!resp.ok) throw new Error(JSON.stringify(data));
     saveTokens(data);
     await syncRecentData().catch(e => console.error('[initial sync error]', e.message));
-    res.send('Connected to WHOOP. You can close this tab — data will now sync automatically in the background.');
+    res.send('Connected to WHOOP. You can close this tab â data will now sync automatically in the background.');
   }catch(e){
     console.error('[oauth callback error]', e.message);
     res.status(500).send('Something went wrong connecting to WHOOP: ' + e.message);
@@ -128,7 +128,7 @@ function upsertDay(day){
   `).run(day);
 }
 
-// NOTE: WHOOP's API evolves — if field names below don't match what comes back,
+// NOTE: WHOOP's API evolves â if field names below don't match what comes back,
 // print the raw JSON (console.log(JSON.stringify(data))) and adjust the mapping.
 // This reflects the v2 API structure as documented at developer.whoop.com as of this writing.
 async function syncRecentData(){
@@ -172,13 +172,13 @@ async function syncRecentData(){
   console.log(`[sync] pulled ${count} cycle(s) at ${new Date().toISOString()}`);
 }
 
-// Runs automatically every 3 hours — this is the actual "automatic" part.
+// Runs automatically every 3 hours â this is the actual "automatic" part.
 cron.schedule('0 */3 * * *', () => {
   syncRecentData().catch(e => console.error('[scheduled sync error]', e.message));
 });
 
 // Also sync once when the server starts up (e.g. after a redeploy).
-syncRecentData().catch(e => console.log('[startup] no data yet —', e.message));
+syncRecentData().catch(e => console.log('[startup] no data yet â', e.message));
 
 // ---------- API for the dashboard ----------
 app.get('/api/data', (req, res) => {
