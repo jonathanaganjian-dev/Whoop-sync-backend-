@@ -1,27 +1,33 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const cron = require('node-cron');
-const Database = require('better-sqlite3');
 
 const app = express();
 app.use(express.json());
 
 // ---------- Storage ----------
-const db = new Database(path.join(__dirname, 'data.db'));
-db.exec(`
-CREATE TABLE IF NOT EXISTS tokens (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  access_token TEXT,
-  refresh_token TEXT,
-  expires_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS days (
-  date TEXT PRIMARY KEY,
-  recovery REAL, rhr REAL, hrv REAL, skin_temp REAL, spo2 REAL,
-  strain REAL, resp_rate REAL, sleep_perf REAL, sleep_eff REAL, asleep_min REAL
-);
-`);
+// Plain JSON file instead of a database — no native compilation step, so
+// nothing to break during a build. Fine for one person's daily data.
+const DATA_FILE = path.join(__dirname, 'data.json');
+let store = { tokens: null, days: {} };
+
+function loadStore(){
+  try{
+    store = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  }catch(e){
+    store = { tokens: null, days: {} }; // no file yet — that's fine on first run
+  }
+}
+function saveStore(){
+  try{
+    fs.writeFileSync(DATA_FILE, JSON.stringify(store));
+  }catch(e){
+    console.error('[storage] failed to save data.json:', e.message);
+  }
+}
+loadStore();
 
 // ---------- Config ----------
 const CLIENT_ID = process.env.WHOOP_CLIENT_ID;
@@ -39,18 +45,16 @@ if(!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI){
 
 // ---------- Token helpers ----------
 function saveTokens(tok){
-  const expiresAt = Date.now() + (tok.expires_in || 3600) * 1000;
-  db.prepare(`
-    INSERT INTO tokens (id, access_token, refresh_token, expires_at) VALUES (1,?,?,?)
-    ON CONFLICT(id) DO UPDATE SET
-      access_token=excluded.access_token,
-      refresh_token=excluded.refresh_token,
-      expires_at=excluded.expires_at
-  `).run(tok.access_token, tok.refresh_token, expiresAt);
+  store.tokens = {
+    access_token: tok.access_token,
+    refresh_token: tok.refresh_token,
+    expires_at: Date.now() + (tok.expires_in || 3600) * 1000,
+  };
+  saveStore();
 }
 
 function getTokens(){
-  return db.prepare('SELECT * FROM tokens WHERE id=1').get();
+  return store.tokens;
 }
 
 async function refreshIfNeeded(){
@@ -102,7 +106,7 @@ app.get('/auth/callback', async (req, res) => {
     if(!resp.ok) throw new Error(JSON.stringify(data));
     saveTokens(data);
     await syncRecentData().catch(e => console.error('[initial sync error]', e.message));
-    res.send('Connected to WHOOP. You can close this tab â data will now sync automatically in the background.');
+    res.send('Connected to WHOOP. You can close this tab — data will now sync automatically in the background.');
   }catch(e){
     console.error('[oauth callback error]', e.message);
     res.status(500).send('Something went wrong connecting to WHOOP: ' + e.message);
@@ -111,24 +115,16 @@ app.get('/auth/callback', async (req, res) => {
 
 // ---------- Data sync ----------
 function upsertDay(day){
-  db.prepare(`
-    INSERT INTO days (date,recovery,rhr,hrv,skin_temp,spo2,strain,resp_rate,sleep_perf,sleep_eff,asleep_min)
-    VALUES (@date,@recovery,@rhr,@hrv,@skin_temp,@spo2,@strain,@resp_rate,@sleep_perf,@sleep_eff,@asleep_min)
-    ON CONFLICT(date) DO UPDATE SET
-      recovery   = COALESCE(excluded.recovery, recovery),
-      rhr        = COALESCE(excluded.rhr, rhr),
-      hrv        = COALESCE(excluded.hrv, hrv),
-      skin_temp  = COALESCE(excluded.skin_temp, skin_temp),
-      spo2       = COALESCE(excluded.spo2, spo2),
-      strain     = COALESCE(excluded.strain, strain),
-      resp_rate  = COALESCE(excluded.resp_rate, resp_rate),
-      sleep_perf = COALESCE(excluded.sleep_perf, sleep_perf),
-      sleep_eff  = COALESCE(excluded.sleep_eff, sleep_eff),
-      asleep_min = COALESCE(excluded.asleep_min, asleep_min)
-  `).run(day);
+  const existing = store.days[day.date] || { date: day.date };
+  const merged = { ...existing };
+  Object.keys(day).forEach(k=>{
+    if(day[k] !== null && day[k] !== undefined) merged[k] = day[k];
+  });
+  store.days[day.date] = merged;
+  saveStore();
 }
 
-// NOTE: WHOOP's API evolves â if field names below don't match what comes back,
+// NOTE: WHOOP's API evolves — if field names below don't match what comes back,
 // print the raw JSON (console.log(JSON.stringify(data))) and adjust the mapping.
 // This reflects the v2 API structure as documented at developer.whoop.com as of this writing.
 async function syncRecentData(){
@@ -172,18 +168,18 @@ async function syncRecentData(){
   console.log(`[sync] pulled ${count} cycle(s) at ${new Date().toISOString()}`);
 }
 
-// Runs automatically every 3 hours â this is the actual "automatic" part.
+// Runs automatically every 3 hours — this is the actual "automatic" part.
 cron.schedule('0 */3 * * *', () => {
   syncRecentData().catch(e => console.error('[scheduled sync error]', e.message));
 });
 
 // Also sync once when the server starts up (e.g. after a redeploy).
-syncRecentData().catch(e => console.log('[startup] no data yet â', e.message));
+syncRecentData().catch(e => console.log('[startup] no data yet —', e.message));
 
 // ---------- API for the dashboard ----------
 app.get('/api/data', (req, res) => {
   if(req.query.key !== DASHBOARD_SECRET) return res.status(401).json({ error: 'unauthorized' });
-  const rows = db.prepare('SELECT * FROM days ORDER BY date ASC').all();
+  const rows = Object.values(store.days).sort((a,b)=> a.date < b.date ? -1 : 1);
   res.json(rows);
 });
 
